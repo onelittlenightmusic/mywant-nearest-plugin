@@ -1,0 +1,202 @@
+wantType:
+  metadata:
+    name: nearest
+    title: Nearest Found
+    description: |
+      Finds the place of a chosen kind nearest to a point — the nearest station
+      to 自宅, the nearest convenience store to 会社.
+
+      The point is a place you have named with coordinates (or "lat,lng"
+      written out). The kinds are looked up in OpenStreetMap through the
+      Overpass API, which needs no key, widening the circle until something is
+      there. Distances are straight-line.
+
+      A station found is also a station, so it can go straight on into
+      transit_search's `from`.
+      Calls python3 main.py <origin> [target] [radius_m]; completes after one search.
+    version: '1.0'
+    category: place
+    pattern: independent
+    labels:
+      # A place you name is where the search starts from.
+      seed-param: origin
+      riffable: source
+      type-icon: LocateFixed
+      category-icon: LocateFixed
+      category-bg-light: "linear-gradient(160deg, #bbf7d0 0%, #e0f2fe 100%)"
+      category-bg-dark: "linear-gradient(160deg, #14532d 0%, #0c4a6e 100%)"
+
+  finalResultField: summary
+
+  parameters:
+    - name: origin
+      description: The place to search around — a place named with coordinates (e.g. 自宅, 会社), or "lat,lng"
+      type: string
+      required: true
+      label: From
+      example: 自宅
+      subType: place
+
+    - name: target
+      description: What to find the nearest of
+      type: string
+      required: false
+      default: station
+      label: Nearest
+      example: station
+      validation:
+        enum:
+        - station
+        - bus_stop
+        - convenience_store
+        - cafe
+        - restaurant
+        - hospital
+        - park
+        - toilets
+
+    - name: radius_m
+      description: How far to look at most, in meters (the search widens up to this)
+      type: number
+      required: false
+      default: 5000
+      label: Up to (m)
+
+  state:
+    - name: skill_args_keys
+      description: Space-separated state field names used as positional CLI args (empty values filtered)
+      type: string
+      label: current
+      persistent: false
+      initialValue: ""
+
+    # ── Parameters, copied ──────────────────────────────────────────
+    - name: origin
+      description: The place searched around (copied from param)
+      type: string
+      subType: place
+      label: current
+      persistent: false
+      initialValue: ""
+
+    - name: target
+      description: The kind searched for (copied from param)
+      type: string
+      label: current
+      persistent: false
+      initialValue: ""
+
+    - name: radius_m
+      description: The widest circle searched (copied from param)
+      type: number
+      label: current
+      persistent: false
+      initialValue: 5000
+
+    # ── The gates ───────────────────────────────────────────────────
+    # Neither survives a restart, as in transit_search: a persistent `summary`
+    # would achieve the want again before it searched, a persistent `error`
+    # would fail it before it could try. The answer itself (below) persists.
+    - name: error
+      description: Why the search failed, if it did
+      type: string
+      label: current
+      persistent: false
+      initialValue: ""
+
+    - name: summary
+      description: The nearest one and how far, e.g. 中野坂上（215m）
+      type: string
+      label: current
+      persistent: false
+      initialValue: ""
+
+    # ── The answer ──────────────────────────────────────────────────
+    - name: nearest
+      description: Name of the nearest one
+      type: string
+      label: current
+      persistent: true
+      exposable: true
+      initialValue: ""
+
+    - name: distance_m
+      description: Straight-line distance to it, in meters
+      type: number
+      label: current
+      persistent: true
+      exposable: true
+      initialValue: 0
+
+    - name: nearest_coordinate
+      description: Where it is, as {lat,lng} — can be named as a place
+      type: object
+      subType: location_coordinate
+      label: current
+      persistent: true
+      exposable: true
+
+    - name: nearest_station
+      description: The nearest station, when a station was searched for — a station, for transit_search
+      type: string
+      subType: station
+      label: current
+      persistent: true
+      exposable: true
+      initialValue: ""
+
+    - name: origin_coordinate
+      description: Where the search started, as {lat,lng}
+      type: object
+      subType: location_coordinate
+      label: current
+      persistent: true
+
+    - name: candidates
+      description: |
+        The nearest few, nearest first. Each element: {name, distance_m, lat, lng}.
+      type: array
+      label: current
+      persistent: true
+      initialValue: []
+
+  finalizeWhen:
+    achieved:
+      field: summary
+      operator: "!="
+      value: ""
+    failed:
+      field: error
+      operator: "!="
+      value: ""
+
+  onInitialize:
+    current:
+      skill_args_keys: "origin target radius_m"
+
+  requires:
+    - nearest
+
+  examples:
+    - name: Nearest Station
+      description: The station nearest to 自宅
+      want:
+        metadata:
+          name: nearest_station_home
+          type: nearest
+        spec:
+          params:
+            origin: 自宅
+            target: station
+
+    - name: Nearest Convenience Store
+      description: The convenience store nearest to a point, within 1km
+      want:
+        metadata:
+          name: nearest_konbini
+          type: nearest
+        spec:
+          params:
+            origin: "35.6812,139.7671"
+            target: convenience_store
+            radius_m: 1000

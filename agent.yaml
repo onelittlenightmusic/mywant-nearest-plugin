@@ -1,0 +1,49 @@
+agent:
+  metadata:
+    name: nearest_agent
+    capability: nearest
+    type: do
+  script:
+    path: ./main.py
+    timeout_seconds: 240
+  state_updates:
+    # The script says why it failed as "failure", not "error" (see main.py's
+    # error_out): an output with "error" is dropped before it reaches state.
+    - name: error
+      type: string
+      label: current
+      onFetchData: "failure"
+    - name: summary
+      type: string
+      label: current
+      onFetchData: "summary"
+    - name: nearest
+      type: string
+      label: current
+      persistent: true
+      onFetchData: "nearest"
+    - name: distance_m
+      type: number
+      label: current
+      persistent: true
+      onFetchData: "distance_m"
+    - name: nearest_coordinate
+      type: object
+      label: current
+      persistent: true
+      onFetchData: "nearest_coordinate"
+    - name: nearest_station
+      type: string
+      label: current
+      persistent: true
+      onFetchData: "nearest_station"
+    - name: origin_coordinate
+      type: object
+      label: current
+      persistent: true
+      onFetchData: "origin_coordinate"
+    - name: candidates
+      type: array
+      label: current
+      persistent: true
+      onFetchData: "candidates"
