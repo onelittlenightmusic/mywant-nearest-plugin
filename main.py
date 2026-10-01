@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
-nearest: 座標から1番近い駅（など、選んだ種類の場所）を OpenStreetMap で探して JSON で出力する。
+nearest: 座標から1番近い駅（など、選んだ種類の場所）を探して JSON で出力する。
 
 起点は名前をつけた座標の thing（「自宅」「会社」など、MyWant に座標が記録されて
 いるもの）か、"35.69,139.68" のような緯度,経度。thing の名前は MyWant の API
 （MYWANT_URL、既定 http://localhost:8080）で座標に引き直す。
 
-探す場所は Overpass API（OpenStreetMap、キー不要）に、起点の周りを半径を広げながら
-尋ねる。見つかったものは起点からの直線距離で並べ、名前が同じもの（JR と地下鉄で
-別の点になっている同じ駅など）はいちばん近い点だけ残す。
+駅は HeartRails Express（日本の駅の API、キー不要）に尋ねる。速く、落ちにくく、路線も
+わかる。日本の外や、そこが答えないときは OpenStreetMap に。駅以外の種類は
+OpenStreetMap だけで、Overpass API（キー不要）に起点の周りを半径を広げながら尋ねる。
+公開の Overpass はよく混むので、間を広げながら何度か試す（overpass を参照）。
+
+見つかったものは起点からの直線距離で並べ、名前が同じもの（JR と地下鉄で別の点に
+なっている同じ駅など）はいちばん近い点だけ残す。
 
 使い方:
   python3 main.py <起点> [種類] [最大半径m]
@@ -24,7 +28,9 @@ nearest: 座標から1番近い駅（など、選んだ種類の場所）を Ope
   "nearest": "中野坂上", "distance_m": 520,
   "nearest_coordinate": {"lat": 35.69, "lng": 139.68, "type": "location_coordinate"},
   "nearest_station": "中野坂上",      // target が station のときだけ。他は ""
-  "candidates": [{"name": "中野坂上", "distance_m": 520, "lat": ..., "lng": ...}, ...]  // 近い順に5件
+  "candidates": [{"name": "中野坂上", "distance_m": 520, "lat": ..., "lng": ...,
+                  "lines": ["都営大江戸線", ...]}, ...],   // 近い順に5件。lines は HeartRails の駅だけ
+  "source": "heartrails"               // heartrails / openstreetmap
 }
 失敗したときは {"failure": "..."}（終了コード 0。error_out を参照）。
 """
@@ -38,17 +44,20 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-# 公開の Overpass はよく混んで 429 / 504 を返す。本家は混んでいても数秒おけば答える
-# ことが多いので、間をおいて本家を試し直し、その合間にほかの公開サーバーも試す。
+HEARTRAILS_URL = "https://express.heartrails.com/api/json"
+
+# 公開の Overpass はよく混んで 504 を、続けて尋ねると 429 を返す。混んでいても少しおけば
+# 答えることが多い（同じ問い合わせが 504 の次に 2 秒で返る）ので、間を広げながら
+# 本家に試し直す（429 には Retry-After を守る）。ほかの公開サーバー（mail.ru、
+# private.coffee）は試したが、ここからは本家より答えなかったので使わない。
+# (サーバー, その前に待つ秒)。
 OVERPASS_MAIN = "https://overpass-api.de/api/interpreter"
-OVERPASS_TRIES = (
-    OVERPASS_MAIN,
-    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
-    OVERPASS_MAIN,
-    "https://overpass.private.coffee/api/interpreter",
-    OVERPASS_MAIN,
-)
-OVERPASS_TIMEOUT_SECONDS = 15
+OVERPASS_TRIES = tuple((OVERPASS_MAIN, wait) for wait in (0, 5, 10, 15, 25, 40))
+OVERPASS_TIMEOUT_SECONDS = 20
+# 探し始めてからここまでで諦める。agent.yaml の timeout_seconds（300）より手前で、
+# 理由を書いて終われるように。
+DEADLINE_SECONDS = 240
+STARTED = time.monotonic()
 MYWANT_URL = os.environ.get("MYWANT_URL", "http://localhost:8080")
 # Overpass が User-Agent のない問い合わせを断るため、名乗る。
 USER_AGENT = "mywant-nearest-plugin/1.0 (+https://github.com/onelittlenightmusic/mywant)"
@@ -77,14 +86,18 @@ COORD_KINDS = ("place", "location_coordinate", "location", "coordinate", "addres
 
 
 def report_progress(percentage, message=""):
-    print(json.dumps({"_progress": percentage, "_message": message}, ensure_ascii=False), flush=True)
+    out = {"_message": message}
+    if percentage is not None:
+        out["_progress"] = percentage
+    print(json.dumps(out, ensure_ascii=False), flush=True)
 
 
 def error_out(message: str) -> None:
     # "error" ではなく "failure" で、終了コード 0 で返す。MyWant の実行側は "error" を
     # 持つ出力や 0 以外の終了を「実行の失敗」として捨て、state に何も書かないので、
     # want の error 欄（finalizeWhen.failed が見る）に理由が届かなくなる。
-    print(json.dumps({"failure": message}, ensure_ascii=False), flush=True)
+    # summary も空で返す：前の検索の答えが残っていると、want は失敗と達成の両方になる。
+    print(json.dumps({"failure": message, "summary": ""}, ensure_ascii=False), flush=True)
     sys.exit(0)
 
 
@@ -133,22 +146,87 @@ def haversine_m(lat1, lng1, lat2, lng2):
     return 2 * r * math.asin(math.sqrt(a))
 
 
+def get_json(url, data=None, timeout=TIMEOUT_SECONDS):
+    req = urllib.request.Request(url, data=data, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=timeout) as res:
+        return json.load(res)
+
+
+def search_heartrails(lat, lng, max_radius):
+    """日本の駅を近い順に。答えがない（日本の外）か届かないときは None。"""
+    url = HEARTRAILS_URL + "?" + urllib.parse.urlencode({"method": "getStations", "x": lng, "y": lat})
+    try:
+        stations = (get_json(url).get("response") or {}).get("station") or []
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    best = {}
+    for st in stations:
+        try:
+            slat, slng = float(st["y"]), float(st["x"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        name, line = st.get("name") or "", st.get("line") or ""
+        dist = round(haversine_m(lat, lng, slat, slng))
+        if not name or dist > max_radius:
+            continue
+        # 同じ駅が路線ごとに並ぶ：いちばん近い点に、路線をまとめる。
+        c = best.setdefault(name, {"name": name, "distance_m": dist, "lat": slat, "lng": slng, "lines": []})
+        if dist < c["distance_m"]:
+            c.update(distance_m=dist, lat=slat, lng=slng)
+        if line and line not in c["lines"]:
+            c["lines"].append(line)
+    return sorted(best.values(), key=lambda c: c["distance_m"]) or None
+
+
 def overpass(lat, lng, radius, cond):
     query = f"[out:json][timeout:{OVERPASS_TIMEOUT_SECONDS}];nwr(around:{int(radius)},{lat},{lng}){cond};out center tags 200;"
     data = urllib.parse.urlencode({"data": query}).encode()
     problems = []
-    for i, url in enumerate(OVERPASS_TRIES):
-        if i:
-            time.sleep(2 * i)
-        req = urllib.request.Request(url, data=data, headers={"User-Agent": USER_AGENT})
+    wait_more = 0
+    for url, wait in OVERPASS_TRIES:
+        wait = max(wait, wait_more)
+        if time.monotonic() - STARTED + wait + OVERPASS_TIMEOUT_SECONDS > DEADLINE_SECONDS:
+            break
+        if wait:
+            report_progress(None, f"OpenStreetMap が混んでいるので{wait}秒待ちます")
+            time.sleep(wait)
+        wait_more = 0
+        host = urllib.parse.urlparse(url).hostname
         try:
-            with urllib.request.urlopen(req, timeout=OVERPASS_TIMEOUT_SECONDS) as res:
-                return json.load(res).get("elements") or []
+            return get_json(url, data, timeout=OVERPASS_TIMEOUT_SECONDS).get("elements") or []
         except urllib.error.HTTPError as e:
-            problems.append(f"{urllib.parse.urlparse(url).hostname}: HTTP {e.code}")
+            problems.append(f"{host}: HTTP {e.code}")
+            if e.code == 429:
+                try:
+                    wait_more = min(60, int(e.headers.get("Retry-After") or 30))
+                except ValueError:
+                    wait_more = 30
         except (urllib.error.URLError, OSError, ValueError) as e:
-            problems.append(f"{urllib.parse.urlparse(url).hostname}: {e}")
-    error_out("OpenStreetMap（Overpass）がどこも答えませんでした — " + "; ".join(problems))
+            problems.append(f"{host}: {e}")
+    error_out("OpenStreetMap（Overpass）が混んでいて答えませんでした。しばらくして試し直してください — " + "; ".join(problems))
+
+
+def search_openstreetmap(lat, lng, max_radius, target, word):
+    # 近くから広げる：街中なら最初の輪で足り、Overpass への負担も小さい。
+    radii = [r for r in (800, 2000, 5000, 15000, 50000) if r < max_radius] + [max_radius]
+    elements = []
+    for i, radius in enumerate(radii):
+        report_progress(30 + 60 * i // len(radii), f"半径{radius}mで{word}を探しています")
+        elements = overpass(lat, lng, radius, TARGETS[target])
+        if elements:
+            break
+    best = {}
+    for e in elements:
+        elat = e.get("lat", (e.get("center") or {}).get("lat"))
+        elng = e.get("lon", (e.get("center") or {}).get("lon"))
+        if elat is None or elng is None:
+            continue
+        tags = e.get("tags") or {}
+        name = tags.get("name") or tags.get("name:ja") or tags.get("name:en") or f"（名前のない{word}）"
+        dist = round(haversine_m(lat, lng, elat, elng))
+        if name not in best or dist < best[name]["distance_m"]:
+            best[name] = {"name": name, "distance_m": dist, "lat": elat, "lng": elng}
+    return sorted(best.values(), key=lambda c: c["distance_m"])
 
 
 def main(args):
@@ -166,32 +244,16 @@ def main(args):
     report_progress(10, f"「{origin}」の座標を確かめています")
     lat, lng = resolve_origin(origin)
 
-    # 近くから広げる：街中なら最初の輪で足り、Overpass への負担も小さい。
-    radii = [r for r in (800, 2000, 5000, 15000, 50000) if r < max_radius] + [max_radius]
     word = TARGET_WORDS[target]
-    elements = []
-    for i, radius in enumerate(radii):
-        report_progress(20 + 60 * i // len(radii), f"半径{radius}mで{word}を探しています")
-        elements = overpass(lat, lng, radius, TARGETS[target])
-        if elements:
-            break
-    if not elements:
-        error_out(f"半径{max_radius}m以内に{word}が見つかりませんでした")
-
-    best = {}
-    for e in elements:
-        elat = e.get("lat", (e.get("center") or {}).get("lat"))
-        elng = e.get("lon", (e.get("center") or {}).get("lon"))
-        if elat is None or elng is None:
-            continue
-        tags = e.get("tags") or {}
-        name = tags.get("name") or tags.get("name:ja") or tags.get("name:en") or f"（名前のない{word}）"
-        dist = round(haversine_m(lat, lng, elat, elng))
-        if name not in best or dist < best[name]["distance_m"]:
-            best[name] = {"name": name, "distance_m": dist, "lat": elat, "lng": elng}
-    candidates = sorted(best.values(), key=lambda c: c["distance_m"])[:CANDIDATES]
+    candidates, source = None, "openstreetmap"
+    if target == "station":
+        report_progress(30, "駅を探しています")
+        candidates, source = search_heartrails(lat, lng, max_radius), "heartrails"
     if not candidates:
-        error_out(f"{word}は見つかりましたが、場所が読めませんでした")
+        candidates, source = search_openstreetmap(lat, lng, max_radius, target, word), "openstreetmap"
+    if not candidates:
+        error_out(f"半径{max_radius}m以内に{word}が見つかりませんでした")
+    candidates = candidates[:CANDIDATES]
     top = candidates[0]
 
     report_progress(100, "見つかりました")
@@ -205,6 +267,9 @@ def main(args):
         "nearest_coordinate": {"lat": top["lat"], "lng": top["lng"], "type": "location_coordinate"},
         "nearest_station": top["name"] if target == "station" else "",
         "candidates": candidates,
+        "source": source,
+        # 前の検索が失敗していたら、その理由を消す（error_out の summary と対）。
+        "failure": "",
     }, ensure_ascii=False), flush=True)
 
 

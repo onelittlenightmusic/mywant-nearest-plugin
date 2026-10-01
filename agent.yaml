@@ -5,7 +5,7 @@ agent:
     type: do
   script:
     path: ./main.py
-    timeout_seconds: 240
+    timeout_seconds: 300
   state_updates:
     # The script says why it failed as "failure", not "error" (see main.py's
     # error_out): an output with "error" is dropped before it reaches state.
@@ -42,6 +42,11 @@ agent:
       label: current
       persistent: true
       onFetchData: "origin_coordinate"
+    - name: source
+      type: string
+      label: current
+      persistent: true
+      onFetchData: "source"
     - name: candidates
       type: array
       label: current

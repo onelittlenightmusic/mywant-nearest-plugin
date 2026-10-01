@@ -7,9 +7,10 @@ wantType:
       to 自宅, the nearest convenience store to 会社.
 
       The point is a place you have named with coordinates (or "lat,lng"
-      written out). The kinds are looked up in OpenStreetMap through the
-      Overpass API, which needs no key, widening the circle until something is
-      there. Distances are straight-line.
+      written out). Stations in Japan come from HeartRails Express; everything
+      else (and stations elsewhere) from OpenStreetMap through the Overpass
+      API, widening the circle until something is there. Neither needs a key.
+      Distances are straight-line.
 
       A station found is also a station, so it can go straight on into
       transit_search's `from`.
@@ -152,9 +153,17 @@ wantType:
       label: current
       persistent: true
 
+    - name: source
+      description: Where the answer came from — heartrails (Japan's stations) or openstreetmap
+      type: string
+      label: current
+      persistent: true
+      initialValue: ""
+
     - name: candidates
       description: |
-        The nearest few, nearest first. Each element: {name, distance_m, lat, lng}.
+        The nearest few, nearest first. Each element: {name, distance_m, lat, lng},
+        and for a station found through HeartRails its `lines`.
       type: array
       label: current
       persistent: true

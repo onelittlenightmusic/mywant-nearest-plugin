@@ -4,9 +4,11 @@ MyWant custom type plugin: finds the place of a chosen kind nearest to a point �
 the nearest station to 自宅, the nearest convenience store to 会社.
 
 The point is a place you have named with coordinates in MyWant (or `lat,lng`
-written out). Places are looked up in OpenStreetMap through the Overpass API
-(no key needed), widening the circle until something is there. Distances are
-straight-line.
+written out). Stations in Japan come from [HeartRails Express](https://express.heartrails.com/)
+— fast, and with their lines. Everything else, and stations outside Japan, come
+from OpenStreetMap through the Overpass API, widening the circle until something
+is there; the public Overpass server is often busy, so a search can wait and try
+again for up to four minutes. Neither needs a key. Distances are straight-line.
 
 ## Installation
 
@@ -36,7 +38,8 @@ spec:
 Result (want state): `summary` (`中野坂上（215m）`), `nearest`, `distance_m`,
 `nearest_coordinate` (a `location_coordinate`, can be named as a place),
 `nearest_station` (a `station`, only for `target: station` — ready for
-`transit_search`'s `from`) and `candidates` (the nearest five).
+`transit_search`'s `from`), `candidates` (the nearest five) and `source`
+(`heartrails` or `openstreetmap`).
 
 ## Requirements
 
