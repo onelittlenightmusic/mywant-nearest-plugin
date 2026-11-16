@@ -19,6 +19,7 @@ wantType:
     category: place
     pattern: independent
     labels:
+      aliases: "nearest,近く,最寄り"
       # A place you name is where the search starts from.
       seed-param: origin
       riffable: source
